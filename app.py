@@ -5,22 +5,30 @@ from flask import Flask, request, jsonify, render_template_string
 
 app = Flask(__name__)
 
-# Strict feature schema ordering matching the binary properties
+# Strict feature schema ordering matching the binary properties[cite: 1, 2]
 FEATURE_NAMES = [
     "Age", "Gender", "Blood Type", "Medical Condition", 
     "Hospital", "Insurance Provider", "Billing Amount", 
     "Admission Type", "Medication"
 ]
 
-# Explicitly mapping runtime resolution to the file 'model.pkl'
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'model.pkl')
+# Smart file scanner to handle any of your pickle file names dynamically[cite: 1, 2]
+POSSIBLE_MODEL_NAMES = ['model.pkl', 'XGBoost.pkl', 'xgboost.pkl']
+model = None
 
-try:
-    with open(MODEL_PATH, 'rb') as f:
-        model = pickle.load(f)
-except Exception as e:
-    print(f"Operational Alert - Failed loading local serial file 'model.pkl': {e}")
-    model = None
+for filename in POSSIBLE_MODEL_NAMES:
+    path = os.path.join(os.path.dirname(__file__), filename)
+    if os.path.exists(path):
+        try:
+            with open(path, 'rb') as f:
+                model = pickle.load(f)
+                print(f" -> Successfully loaded model file: {filename}")
+                break
+        except Exception as e:
+            print(f" -> Error reading {filename}: {e}")
+
+if model is None:
+    print(" -> CRITICAL ALERT: No valid model pickle file found in repository root directory!")
 
 # Attractive modern HTML UI definition
 HTML_LAYOUT = """
@@ -30,7 +38,7 @@ HTML_LAYOUT = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>XGBoost Prediction Engine</title>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-weight/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
         :root {
             --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
@@ -126,7 +134,7 @@ HTML_LAYOUT = """
     </form>
 
     <div class="result-panel" id="resultPanel">
-        <div class="result-header">
+        <div class="result-header" id="resultHeader">
             <i class="fa-solid fa-circle-check"></i> Analysis Complete
         </div>
         <div class="result-body" id="resultBody"></div>
@@ -150,7 +158,15 @@ HTML_LAYOUT = """
         };
 
         const panel = document.getElementById('resultPanel');
+        const header = document.getElementById('resultHeader');
         const body = document.getElementById('resultBody');
+
+        // Reveal the panel with an ongoing spinning visual state status
+        panel.style.display = 'block';
+        panel.classList.add('show');
+        header.style.color = '#6366f1';
+        header.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Processing Matrix Inference...';
+        body.innerHTML = '';
 
         try {
             const response = await fetch('/predict', {
@@ -159,25 +175,29 @@ HTML_LAYOUT = """
                 body: JSON.stringify(payload)
             });
             
-            const result = await response.get_json();
+            // Standard safe native object decoding parsing structure
+            const result = await response.json(); 
             
             if (response.ok) {
+                header.style.color = '#10b981';
+                header.innerHTML = '<i class="fa-solid fa-circle-check"></i> Prediction Complete';
                 body.innerHTML = `
-                    <p style="margin-bottom: 0.5rem;"><strong>Predicted Classification Class Index:</strong> <span style="font-size: 1.2rem; color: #10b981;">${result.prediction}</span></p>
-                    <p><strong>Confidence Multi-Class Probabilities Map:</strong></p>
-                    <p style="margin-top: 0.25rem; font-size: 0.9rem; color: #94a3b8;">${result.probabilities.map(p => `<span class="probability-tag">${(p * 100).toFixed(2)}%</span>`).join(' ')}</p>
+                    <p style="margin-bottom: 0.75rem;"><strong>Predicted Class Designation:</strong> <span style="font-size: 1.25rem; color: #10b981; font-weight: bold;">Class ${result.prediction}</span></p>
+                    <p style="margin-bottom: 0.25rem;"><strong>Confidence Probabilities Mapping:</strong></p>
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem;">
+                        ${result.probabilities.map((p, idx) => `<span class="probability-tag">Idx ${idx}: ${(p * 100).toFixed(2)}%</span>`).join('')}
+                    </div>
                 `;
-                panel.style.display = 'block';
-                setTimeout(() => panel.classList.add('show'), 10);
             } else {
-                body.innerHTML = `<p style="color: #ef4444;"><strong>Error processing data:</strong> ${result.error}</p>`;
-                panel.style.display = 'block';
-                panel.classList.add('show');
+                header.style.color = '#ef4444';
+                header.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Model Error Context';
+                body.innerHTML = `<p style="color: #ef4444;"><strong>Server Status Code ${response.status}:</strong> ${result.error || 'The model was unable to parse input variables.'}</p>`;
             }
         } catch (error) {
-            body.innerHTML = `<p style="color: #ef4444;"><strong>Network Connectivity Error:</strong> Unable to process endpoint metrics.</p>`;
-            panel.style.display = 'block';
-            panel.classList.add('show');
+            console.error("Fetch API transaction crash:", error);
+            header.style.color = '#ef4444';
+            header.innerHTML = '<i class="fa-solid fa-wifi"></i> Connectivity Blocked';
+            body.innerHTML = `<p style="color: #ef4444;"><strong>Error Context:</strong> Cannot communicate with the server endpoint. If this is a initial spin-up on a Free Instance, please wait 1-2 minutes for the system container to launch fully and refresh.</p>`;
         }
     });
 </script>
@@ -192,7 +212,7 @@ def portal_interface():
 @app.route('/predict', methods=['POST'])
 def run_predict_inference():
     if not model:
-        return jsonify({"error": "The designated engine file 'model.pkl' was not loaded."}), 500
+        return jsonify({"error": "The background engine workspace could not find or access your .pkl model file."}), 500
         
     try:
         data = request.get_json(force=True)
@@ -201,13 +221,13 @@ def run_predict_inference():
         features = []
         for feature in FEATURE_NAMES:
             if feature not in data:
-                return jsonify({"error": f"Missing target index element: '{feature}'"}), 400
+                return jsonify({"error": f"Missing payload attribute parameter dimension: '{feature}'"}), 400
             features.append(data[feature])
             
         # Parse vector arrays smoothly into native arrays
         input_array = np.array([features])
         
-        # Execute matrix inference
+        # Execute matrix inference[cite: 1, 2]
         prediction = model.predict(input_array)
         probabilities = model.predict_proba(input_array)
         
@@ -217,7 +237,7 @@ def run_predict_inference():
         })
         
     except Exception as e:
-        return jsonify({"error": f"Runtime verification processing failed: {str(e)}"}), 400
+        return jsonify({"error": f"Runtime computational pipeline failure: {str(e)}"}), 400
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
